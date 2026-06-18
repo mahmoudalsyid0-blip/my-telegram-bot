@@ -19,7 +19,7 @@ import anthropic
 # ─────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"         # ← Replace with your BotFather token
+BOT_TOKEN = "8713359340:AAFaFaHP1xwO99P5DmTp7MSEyFHE3kyY4-M"         # ← Replace with your BotFather token
 ANTHROPIC_API_KEY = "YOUR_ANTHROPIC_API_KEY_HERE"  # ← Replace with your Anthropic key (for chat)
 
 # ─────────────────────────────────────────────
