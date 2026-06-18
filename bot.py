@@ -17,10 +17,15 @@ from telegram.ext import (
 import anthropic
 
 # ─────────────────────────────────────────────
-# Configuration
+# Configuration — set these in Render → Environment
 # ─────────────────────────────────────────────
-BOT_TOKEN = os.environ["8713359340:AAFaFaHP1xwO99P5DmTp7MSEyFHE3kyY4-M"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+BOT_TOKEN = os.environ.get("8713359340:AAFaFaHP1xwO99P5DmTp7MSEyFHE3kyY4-M")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN environment variable is not set!")
+if not ANTHROPIC_API_KEY:
+    raise RuntimeError("❌ ANTHROPIC_API_KEY environment variable is not set!")
 
 # ─────────────────────────────────────────────
 # Logging
@@ -30,6 +35,18 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+# Anthropic client (sync — runs in executor)
+# ─────────────────────────────────────────────
+_anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+SYSTEM_PROMPT = (
+    "You are a fun, witty, and helpful Telegram bot assistant. "
+    "Keep replies concise (2-4 sentences max), friendly, and a little playful. "
+    "You can use light emoji where appropriate. "
+    "Never reveal you are powered by Claude/Anthropic unless directly asked."
+)
 
 # ─────────────────────────────────────────────
 # URL Detection
@@ -46,25 +63,22 @@ SUPPORTED_DOMAINS = [
 ]
 
 URL_REGEX = re.compile(
-    r"https?://(?:www\.)?" + r"|https?://(?:www\.)?".join(SUPPORTED_DOMAINS) +
-    r"[^\s]*",
+    r"https?://(?:www\.)?(?:" +
+    "|".join(SUPPORTED_DOMAINS) +
+    r")[^\s]*",
     re.IGNORECASE,
 )
 
-def extract_url(text: str) -> str | None:
-    """Return the first supported URL found in text, or None."""
+def extract_url(text: str):
     match = URL_REGEX.search(text)
     return match.group(0) if match else None
 
 
 # ─────────────────────────────────────────────
-# yt-dlp Download Helper
+# yt-dlp Download (blocking — runs in executor)
 # ─────────────────────────────────────────────
-async def download_media(url: str, download_dir: str) -> tuple[str | None, str]:
-    """
-    Download media from a URL using yt-dlp.
-    Returns (file_path, error_message). One of them will be None/empty.
-    """
+def _do_download(url: str, download_dir: str):
+    """Blocking download — called via run_in_executor."""
     ydl_opts = {
         "outtmpl": os.path.join(download_dir, "%(title)s.%(ext)s"),
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -72,34 +86,31 @@ async def download_media(url: str, download_dir: str) -> tuple[str | None, str]:
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        # Cap file size at ~45 MB to stay under Telegram's 50 MB limit
         "max_filesize": 45 * 1024 * 1024,
     }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        if "entries" in info:
+            info = info["entries"][0]
+        filename = ydl.prepare_filename(info)
+        base = os.path.splitext(filename)[0]
+        for ext in ("mp4", "mkv", "webm", "mp3", "m4a"):
+            candidate = f"{base}.{ext}"
+            if os.path.exists(candidate):
+                return candidate
+        return filename
 
-    loop = asyncio.get_event_loop()
 
-    def _download():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            # Find the downloaded file
-            if "entries" in info:          # playlist fallback (shouldn't happen)
-                info = info["entries"][0]
-            filename = ydl.prepare_filename(info)
-            # yt-dlp might change the extension after merging
-            base = os.path.splitext(filename)[0]
-            for ext in ("mp4", "mkv", "webm", "mp3", "m4a"):
-                candidate = f"{base}.{ext}"
-                if os.path.exists(candidate):
-                    return candidate
-            return filename  # best guess
-
+async def download_media(url: str, download_dir: str):
+    """Async wrapper around the blocking yt-dlp call."""
+    loop = asyncio.get_running_loop()
     try:
-        file_path = await loop.run_in_executor(None, _download)
+        file_path = await loop.run_in_executor(None, _do_download, url, download_dir)
         if not os.path.exists(file_path):
-            return None, "File was downloaded but I couldn't locate it. Try again!"
+            return None, "Downloaded but file not found. Try again!"
         return file_path, ""
     except yt_dlp.utils.DownloadError as e:
-        logger.warning("yt-dlp DownloadError: %s", e)
+        logger.warning("yt-dlp error: %s", e)
         return None, str(e)
     except Exception as e:
         logger.exception("Unexpected download error")
@@ -107,138 +118,129 @@ async def download_media(url: str, download_dir: str) -> tuple[str | None, str]:
 
 
 # ─────────────────────────────────────────────
-# Anthropic Chat Helper
+# Anthropic Chat (blocking — runs in executor)
 # ─────────────────────────────────────────────
-_anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+def _do_chat(user_message: str) -> str:
+    """Blocking Anthropic API call — called via run_in_executor."""
+    response = _anthropic_client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=300,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return response.content[0].text
 
-SYSTEM_PROMPT = (
-    "You are a fun, witty, and helpful Telegram bot assistant. "
-    "Keep replies concise (2–4 sentences max), friendly, and a little playful. "
-    "You can use light emoji where appropriate. "
-    "If the user seems bored, suggest something interesting. "
-    "Never reveal you are powered by Claude/Anthropic unless directly asked."
-)
 
 async def chat_reply(user_message: str) -> str:
-    """Get a smart, playful reply from Claude for non-URL messages."""
-    loop = asyncio.get_event_loop()
-
-    def _call():
-        response = _anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=300,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        return response.content[0].text
-
+    """Async wrapper around the blocking Anthropic call."""
+    loop = asyncio.get_running_loop()
     try:
-        return await loop.run_in_executor(None, _call)
+        return await loop.run_in_executor(None, _do_chat, user_message)
     except Exception as e:
         logger.exception("Anthropic API error")
-        return "Hmm, my brain glitched for a second 🧠⚡ Try again in a moment!"
+        return "عقلي اتعلق لثانية 🧠⚡ جرب تاني!"
 
 
 # ─────────────────────────────────────────────
-# Handlers
+# Telegram Handlers
 # ─────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "👋 Hey there! I'm your all-in-one bot.\n\n"
-        "📥 **Send me a link** from YouTube, TikTok, Instagram, Facebook, Twitter/X "
-        "and I'll download the video and send it back to you.\n\n"
-        "💬 Or just **chat with me** — I don't bite! 😄",
-        parse_mode="Markdown",
+        "👋 أهلاً! أنا بوتك الشامل.\n\n"
+        "📥 ابعتلي لينك من YouTube أو TikTok أو Instagram أو Facebook أو Twitter/X "
+        "وهنزل الفيديو وابعتهولك.\n\n"
+        "💬 أو كلمني بس — أنا مش بعض! 😄"
     )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_text = update.message.text or ""
-    chat_id = update.effective_chat.id
+    if not update.message or not update.message.text:
+        return
 
+    user_text = update.message.text
+    chat_id = update.effective_chat.id
     url = extract_url(user_text)
 
-    # ── Branch 1: URL detected → download & send ──
+    # ── Branch 1: URL → download & send ──
     if url:
-        await update.message.reply_text(
-            "🔍 Link detected! Downloading your media... this may take a moment ⏳"
-        )
+        await update.message.reply_text("🔍 لقيت لينك! بنزله دلوقتي... استنى لحظة ⏳")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             file_path, error = await download_media(url, tmp_dir)
 
             if error or not file_path:
-                friendly_error = (
-                    "😕 Couldn't download that link. It might be:\n"
-                    "• Private or age-restricted\n"
-                    "• Too large (> 45 MB)\n"
-                    "• From an unsupported platform\n\n"
-                    f"Technical detail: `{error[:200]}`"
+                await update.message.reply_text(
+                    "😕 مقدرتش أنزل اللينك ده. ممكن يكون:\n"
+                    "• خاص أو محتاج تسجيل دخول\n"
+                    "• أكبر من 45 ميجا\n"
+                    "• من موقع مش مدعوم\n\n"
+                    f"التفاصيل: {error[:200]}"
                 )
-                await update.message.reply_text(friendly_error, parse_mode="Markdown")
                 return
 
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             logger.info("Downloaded %.1f MB → %s", file_size_mb, file_path)
 
+            ext = Path(file_path).suffix.lower()
             try:
-                ext = Path(file_path).suffix.lower()
-                if ext in (".mp4", ".mkv", ".webm", ".mov", ".avi"):
-                    await context.bot.send_video(
-                        chat_id=chat_id,
-                        video=open(file_path, "rb"),
-                        caption="🎬 Here's your video! Enjoy 🍿",
-                        supports_streaming=True,
-                        read_timeout=120,
-                        write_timeout=120,
-                    )
-                elif ext in (".mp3", ".m4a", ".ogg", ".wav"):
-                    await context.bot.send_audio(
-                        chat_id=chat_id,
-                        audio=open(file_path, "rb"),
-                        caption="🎵 Your audio file!",
-                        read_timeout=60,
-                        write_timeout=60,
-                    )
-                else:
-                    await context.bot.send_document(
-                        chat_id=chat_id,
-                        document=open(file_path, "rb"),
-                        caption="📁 Here's your file!",
-                        read_timeout=120,
-                        write_timeout=120,
-                    )
+                with open(file_path, "rb") as f:
+                    if ext in (".mp4", ".mkv", ".webm", ".mov", ".avi"):
+                        await context.bot.send_video(
+                            chat_id=chat_id,
+                            video=f,
+                            caption="🎬 اتفضل الفيديو! 🍿",
+                            supports_streaming=True,
+                            read_timeout=120,
+                            write_timeout=120,
+                            connect_timeout=30,
+                        )
+                    elif ext in (".mp3", ".m4a", ".ogg", ".wav"):
+                        await context.bot.send_audio(
+                            chat_id=chat_id,
+                            audio=f,
+                            caption="🎵 اتفضل الصوت!",
+                            read_timeout=60,
+                            write_timeout=60,
+                            connect_timeout=30,
+                        )
+                    else:
+                        await context.bot.send_document(
+                            chat_id=chat_id,
+                            document=f,
+                            caption="📁 اتفضل الملف!",
+                            read_timeout=120,
+                            write_timeout=120,
+                            connect_timeout=30,
+                        )
             except Exception as e:
                 logger.exception("Failed to send file")
                 await update.message.reply_text(
-                    f"⚠️ I downloaded the file but couldn't send it (maybe it's still too large for Telegram).\n`{e}`",
-                    parse_mode="Markdown",
+                    f"⚠️ نزلت الملف بس مقدرتش ابعته (ممكن حجمه كبير أوي).\n{e}"
                 )
-            # ── Auto-cleanup: file is deleted automatically when `tmp_dir` exits ──
+        # tmp_dir بيتمسح أوتوماتيك هنا
 
-    # ── Branch 2: Regular text → smart AI chat ──
+    # ── Branch 2: Regular text → AI chat ──
     else:
         reply = await chat_reply(user_text)
         await update.message.reply_text(reply)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Unhandled exception: %s", context.error, exc_info=context.error)
+    logger.error("Unhandled error: %s", context.error, exc_info=context.error)
     if isinstance(update, Update) and update.message:
-        await update.message.reply_text(
-            "⚠️ Something unexpected happened on my end. Please try again!"
-        )
+        await update.message.reply_text("⚠️ حصل خطأ غير متوقع. جرب تاني!")
 
 
 # ─────────────────────────────────────────────
-# Main Entry Point
+# Main — async entry point
 # ─────────────────────────────────────────────
-def main() -> None:
+async def main() -> None:
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .read_timeout(30)
         .write_timeout(30)
+        .connect_timeout(30)
         .build()
     )
 
@@ -246,10 +248,11 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    logger.info("Bot is running… Press Ctrl+C to stop.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("✅ Bot is running...")
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+
     main()
