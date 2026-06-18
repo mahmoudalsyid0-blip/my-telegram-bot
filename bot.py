@@ -19,8 +19,8 @@ import anthropic
 # ─────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────
-BOT_TOKEN = "8713359340:AAFaFaHP1xwO99P5DmTp7MSEyFHE3kyY4-M"         # ← Replace with your BotFather token
-ANTHROPIC_API_KEY = "YOUR_ANTHROPIC_API_KEY_HERE"  # ← Replace with your Anthropic key (for chat)
+BOT_TOKEN = os.environ["8713359340:AAFaFaHP1xwO99P5DmTp7MSEyFHE3kyY4-M"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 # ─────────────────────────────────────────────
 # Logging
@@ -251,4 +251,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    main()
     main()
