@@ -244,18 +244,26 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .read_timeout(30)
-        .write_timeout(30)
-        .connect_timeout(30)
-        .build()
-    )
+    import asyncio
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_error_handler(error_handler)
+    async def run_bot():
+        app = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .read_timeout(30)
+            .write_timeout(30)
+            .connect_timeout(30)
+            .build()
+        )
 
-    logger.info("✅ Bot is running...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_error_handler(error_handler)
+
+        logger.info("✅ Bot is running...")
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        await app.updater.idle()
+
+    asyncio.run(run_bot())
