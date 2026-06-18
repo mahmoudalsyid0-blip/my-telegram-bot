@@ -1,9 +1,9 @@
 # Telegram bot framework (async/await, v20+)
-# httpx >=0.27,<0.29 is pulled in automatically — do NOT pin it here
 python-telegram-bot==21.6
 
 # Media downloader
-yt-dlp
+yt-dlp==2024.11.18
 
-# Anthropic SDK for interactive chat replies
-anthropic
+# Async HTTP (used internally by python-telegram-bot)
+httpx==0.27.2
+anyio==4.6.2
