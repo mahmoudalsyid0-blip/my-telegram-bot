@@ -14,17 +14,11 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-import anthropic
 
 # ─────────────────────────────────────────────
-# Configuration — set these in Render → Environment
+# Configuration
 # ─────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ANTHROPIC_API_KEY = None
-
-if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN environment variable is not set!")
-
+BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"  # ← Replace with your BotFather token
 
 # ─────────────────────────────────────────────
 # Logging
@@ -34,18 +28,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────
-# Anthropic client (sync — runs in executor)
-# ─────────────────────────────────────────────
-_anthropic_client = None
-
-SYSTEM_PROMPT = (
-    "You are a fun, witty, and helpful Telegram bot assistant. "
-    "Keep replies concise (2-4 sentences max), friendly, and a little playful. "
-    "You can use light emoji where appropriate. "
-    "Never reveal you are powered by Claude/Anthropic unless directly asked."
-)
 
 # ─────────────────────────────────────────────
 # URL Detection
@@ -62,22 +44,25 @@ SUPPORTED_DOMAINS = [
 ]
 
 URL_REGEX = re.compile(
-    r"https?://(?:www\.)?(?:" +
-    "|".join(SUPPORTED_DOMAINS) +
-    r")[^\s]*",
+    r"https?://(?:www\.)?(?:" + r"|".join(SUPPORTED_DOMAINS) + r")[^\s]*",
     re.IGNORECASE,
 )
 
-def extract_url(text: str):
+
+def extract_url(text: str) -> str | None:
+    """Return the first supported URL found in text, or None."""
     match = URL_REGEX.search(text)
     return match.group(0) if match else None
 
 
 # ─────────────────────────────────────────────
-# yt-dlp Download (blocking — runs in executor)
+# yt-dlp Download Helper
 # ─────────────────────────────────────────────
-def _do_download(url: str, download_dir: str):
-    """Blocking download — called via run_in_executor."""
+async def download_media(url: str, download_dir: str) -> tuple[str | None, str]:
+    """
+    Download media from a URL using yt-dlp.
+    Returns (file_path, error_message). One of them will be None/empty.
+    """
     ydl_opts = {
         "outtmpl": os.path.join(download_dir, "%(title)s.%(ext)s"),
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -85,31 +70,34 @@ def _do_download(url: str, download_dir: str):
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        # Cap file size at ~45 MB to stay under Telegram's 50 MB limit
         "max_filesize": 45 * 1024 * 1024,
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        if "entries" in info:
-            info = info["entries"][0]
-        filename = ydl.prepare_filename(info)
-        base = os.path.splitext(filename)[0]
-        for ext in ("mp4", "mkv", "webm", "mp3", "m4a"):
-            candidate = f"{base}.{ext}"
-            if os.path.exists(candidate):
-                return candidate
-        return filename
 
+    def _download() -> str:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            # Unwrap playlist fallback (shouldn't happen with noplaylist=True)
+            if "entries" in info:
+                info = info["entries"][0]
+            filename = ydl.prepare_filename(info)
+            # yt-dlp may change the extension after merging
+            base = os.path.splitext(filename)[0]
+            for ext in ("mp4", "mkv", "webm", "mp3", "m4a"):
+                candidate = f"{base}.{ext}"
+                if os.path.exists(candidate):
+                    return candidate
+            return filename  # best guess
 
-async def download_media(url: str, download_dir: str):
-    """Async wrapper around the blocking yt-dlp call."""
-    loop = asyncio.get_running_loop()
     try:
-        file_path = await loop.run_in_executor(None, _do_download, url, download_dir)
+        # asyncio.to_thread is the modern replacement for loop.run_in_executor
+        # and avoids "no current event loop" errors in Python 3.10+
+        file_path = await asyncio.to_thread(_download)
         if not os.path.exists(file_path):
-            return None, "Downloaded but file not found. Try again!"
+            return None, "File was downloaded but I couldn't locate it. Try again!"
         return file_path, ""
     except yt_dlp.utils.DownloadError as e:
-        logger.warning("yt-dlp error: %s", e)
+        logger.warning("yt-dlp DownloadError: %s", e)
         return None, str(e)
     except Exception as e:
         logger.exception("Unexpected download error")
@@ -117,153 +105,127 @@ async def download_media(url: str, download_dir: str):
 
 
 # ─────────────────────────────────────────────
-# Anthropic Chat (blocking — runs in executor)
-# ─────────────────────────────────────────────
-def _do_chat(user_message: str) -> str:
-    return "🤖 الذكاء الاصطناعي غير مفعل حالياً."
-
-async def chat_reply(user_message: str) -> str:
-    """Async wrapper around the blocking Anthropic call."""
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(None, _do_chat, user_message)
-    except Exception as e:
-        logger.exception("Anthropic API error")
-        return "عقلي اتعلق لثانية 🧠⚡ جرب تاني!"
-
-
-# ─────────────────────────────────────────────
-# Telegram Handlers
+# Handlers
 # ─────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "👋 أهلاً! أنا بوتك الشامل.\n\n"
-        "📥 ابعتلي لينك من YouTube أو TikTok أو Instagram أو Facebook أو Twitter/X "
-        "وهنزل الفيديو وابعتهولك.\n\n"
-        "💬 أو كلمني بس — أنا مش بعض! 😄"
+        "👋 Hey there! I'm your media downloader bot.\n\n"
+        "📥 *Send me a link* from YouTube, TikTok, Instagram, Facebook, Twitter/X, "
+        "Vimeo, Reddit, or Twitch and I'll download it and send it back to you.\n\n"
+        "💬 Or type */help* to see this message again.",
+        parse_mode="Markdown",
     )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text:
-        return
-
-    user_text = update.message.text
+    user_text = update.message.text or ""
     chat_id = update.effective_chat.id
+
     url = extract_url(user_text)
 
-    # ── Branch 1: URL → download & send ──
+    # ── Branch 1: URL detected → download & send ──
     if url:
-        await update.message.reply_text("🔍 لقيت لينك! بنزله دلوقتي... استنى لحظة ⏳")
+        await update.message.reply_text(
+            "🔍 Link detected! Downloading your media... this may take a moment ⏳"
+        )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             file_path, error = await download_media(url, tmp_dir)
 
             if error or not file_path:
-                await update.message.reply_text(
-                    "😕 مقدرتش أنزل اللينك ده. ممكن يكون:\n"
-                    "• خاص أو محتاج تسجيل دخول\n"
-                    "• أكبر من 45 ميجا\n"
-                    "• من موقع مش مدعوم\n\n"
-                    f"التفاصيل: {error[:200]}"
+                friendly_error = (
+                    "😕 Couldn't download that link. It might be:\n"
+                    "• Private or age-restricted\n"
+                    "• Too large (> 45 MB)\n"
+                    "• From an unsupported platform\n\n"
+                    f"Technical detail: `{error[:200]}`"
                 )
+                await update.message.reply_text(friendly_error, parse_mode="Markdown")
                 return
 
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             logger.info("Downloaded %.1f MB → %s", file_size_mb, file_path)
 
-            ext = Path(file_path).suffix.lower()
             try:
-                with open(file_path, "rb") as f:
-                    if ext in (".mp4", ".mkv", ".webm", ".mov", ".avi"):
+                ext = Path(file_path).suffix.lower()
+                if ext in (".mp4", ".mkv", ".webm", ".mov", ".avi"):
+                    with open(file_path, "rb") as f:
                         await context.bot.send_video(
                             chat_id=chat_id,
                             video=f,
-                            caption="🎬 اتفضل الفيديو! 🍿",
+                            caption="🎬 Here's your video! Enjoy 🍿",
                             supports_streaming=True,
                             read_timeout=120,
                             write_timeout=120,
-                            connect_timeout=30,
                         )
-                    elif ext in (".mp3", ".m4a", ".ogg", ".wav"):
+                elif ext in (".mp3", ".m4a", ".ogg", ".wav"):
+                    with open(file_path, "rb") as f:
                         await context.bot.send_audio(
                             chat_id=chat_id,
                             audio=f,
-                            caption="🎵 اتفضل الصوت!",
+                            caption="🎵 Your audio file!",
                             read_timeout=60,
                             write_timeout=60,
-                            connect_timeout=30,
                         )
-                    else:
+                else:
+                    with open(file_path, "rb") as f:
                         await context.bot.send_document(
                             chat_id=chat_id,
                             document=f,
-                            caption="📁 اتفضل الملف!",
+                            caption="📁 Here's your file!",
                             read_timeout=120,
                             write_timeout=120,
-                            connect_timeout=30,
                         )
             except Exception as e:
                 logger.exception("Failed to send file")
                 await update.message.reply_text(
-                    f"⚠️ نزلت الملف بس مقدرتش ابعته (ممكن حجمه كبير أوي).\n{e}"
+                    f"⚠️ Downloaded but couldn't send it "
+                    f"(likely still too large for Telegram).\n`{e}`",
+                    parse_mode="Markdown",
                 )
-        # tmp_dir بيتمسح أوتوماتيك هنا
+            # tmp_dir is cleaned up automatically when the `with` block exits
 
-    # ── Branch 2: Regular text → AI chat ──
+    # ── Branch 2: No URL → prompt the user ──
     else:
-        reply = await chat_reply(user_text)
-        await update.message.reply_text(reply)
+        await update.message.reply_text(
+            "📎 Send me a supported media URL and I'll download it for you!\n\n"
+            "Supported platforms: YouTube, TikTok, Instagram, Facebook, "
+            "Twitter/X, Vimeo, Reddit, Twitch"
+        )
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Unhandled error: %s", context.error, exc_info=context.error)
+    logger.error("Unhandled exception: %s", context.error, exc_info=context.error)
     if isinstance(update, Update) and update.message:
-        await update.message.reply_text("⚠️ حصل خطأ غير متوقع. جرب تاني!")
+        await update.message.reply_text(
+            "⚠️ Something unexpected happened on my end. Please try again!"
+        )
 
 
 # ─────────────────────────────────────────────
-# Main — async entry point
+# Main Entry Point  ← KEY: synchronous main() + app.run_polling()
 # ─────────────────────────────────────────────
-async def main() -> None:
+def main() -> None:
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .read_timeout(30)
         .write_timeout(30)
-        .connect_timeout(30)
         .build()
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    logger.info("✅ Bot is running...")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("Bot is running… Press Ctrl+C to stop.")
+    # run_polling() creates and manages its own event loop internally.
+    # Do NOT wrap main() in asyncio.run() — that causes "event loop already running".
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    import asyncio
+    main()  # ← Plain call, no asyncio.run(). run_polling() owns the loop.
 
-    async def run_bot():
-        app = (
-            ApplicationBuilder()
-            .token(BOT_TOKEN)
-            .read_timeout(30)
-            .write_timeout(30)
-            .connect_timeout(30)
-            .build()
-        )
-
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_error_handler(error_handler)
-
-        logger.info("✅ Bot is running...")
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-        await app.updater.idle()
-
-    asyncio.run(run_bot())
+    app.run_polling()
