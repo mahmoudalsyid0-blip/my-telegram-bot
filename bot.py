@@ -19,13 +19,12 @@ import anthropic
 # ─────────────────────────────────────────────
 # Configuration — set these in Render → Environment
 # ─────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("8713359340:AAFaFaHP1xwO99P5DmTp7MSEyFHE3kyY4-M")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ANTHROPIC_API_KEY = None
 
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN environment variable is not set!")
-if not ANTHROPIC_API_KEY:
-    raise RuntimeError("❌ ANTHROPIC_API_KEY environment variable is not set!")
+
 
 # ─────────────────────────────────────────────
 # Logging
@@ -39,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 # Anthropic client (sync — runs in executor)
 # ─────────────────────────────────────────────
-_anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+_anthropic_client = None
 
 SYSTEM_PROMPT = (
     "You are a fun, witty, and helpful Telegram bot assistant. "
@@ -121,15 +120,7 @@ async def download_media(url: str, download_dir: str):
 # Anthropic Chat (blocking — runs in executor)
 # ─────────────────────────────────────────────
 def _do_chat(user_message: str) -> str:
-    """Blocking Anthropic API call — called via run_in_executor."""
-    response = _anthropic_client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=300,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    return response.content[0].text
-
+    return "🤖 الذكاء الاصطناعي غير مفعل حالياً."
 
 async def chat_reply(user_message: str) -> str:
     """Async wrapper around the blocking Anthropic call."""
@@ -254,5 +245,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-    main()
