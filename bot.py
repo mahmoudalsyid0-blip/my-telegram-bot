@@ -3,7 +3,12 @@ import re
 import logging
 import tempfile
 from pathlib import Path
+import logging
 
+logger = logging.getLogger(__name__)
+
+async def error_handler(update, context):
+    logger.error(f"Exception while handling update: {context.error}")
 import yt_dlp
 from telegram import Update
 from telegram.ext import (
