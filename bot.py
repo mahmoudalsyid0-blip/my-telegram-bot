@@ -84,15 +84,12 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(error_handler)
 
-    logger.info("🚀 Bot running on webhook mode...")
+    logger.info("Bot is running…")
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=WEBHOOK_URL,
-    )
+    app.run_polling()
+    
 
 if __name__ == "__main__":
     main()
-    app.run_polling()
