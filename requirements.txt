@@ -1,5 +1,5 @@
 # Telegram bot framework (async/await, v20+)
-python-telegram-bot==21.6
+python-telegram-bot==20.0
 
 # Media downloader
 yt-dlp==2024.11.18
