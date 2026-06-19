@@ -3,11 +3,23 @@ import re
 import logging
 import asyncio
 import tempfile
-from pathlib import Path
 import os
 
-# بعد إرسال الفيديو:
-await context.bot.send_video(chat_id=chat_id, video=open(file_path, 'rb'))
+# تأكد أن الدالة تبدأ بـ async def
+async def send_video_handler(update, context):
+    file_path = "اسم_الفيديو.mp4" # (هذا هو المسار الذي حملت فيه الفيديو)
+    
+    try:
+        # هنا أمر الإرسال
+        await context.bot.send_video(chat_id=update.effective_chat.id, video=open(file_path, 'rb'))
+    except Exception as e:
+        print(f"حدث خطأ أثناء الإرسال: {e}")
+    finally:
+        # هذا الجزء سيعمل دائماً (سواء نجح الإرسال أم فشل)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            print("تم حذف الفيديو بنجاح من السيرفر")
+from pathlib import Path
 
 # أضف هذا السطر فوراً بعد الإرسال:
 if os.path.exists(file_path):
