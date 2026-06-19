@@ -19,7 +19,10 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"  # ← Replace with your BotFather token
+import os
+
+# هذا السطر يخبر البوت أن يبحث عن التوكن في "إعدادات السيرفر" (Environment Variables)
+BOT_TOKEN = os.getenv("BOT_TOKEN") # ← Replace with your BotFather token
 MAX_FILESIZE_BYTES = 45 * 1024 * 1024       # ~45 MB, stays under Telegram's 50 MB limit
 
 # ─────────────────────────────────────────────
