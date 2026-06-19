@@ -4,7 +4,15 @@ import logging
 import asyncio
 import tempfile
 from pathlib import Path
+import os
 
+# بعد إرسال الفيديو:
+await context.bot.send_video(chat_id=chat_id, video=open(file_path, 'rb'))
+
+# أضف هذا السطر فوراً بعد الإرسال:
+if os.path.exists(file_path):
+    os.remove(file_path)
+    print("تم حذف الفيديو من السيرفر لتوفير المساحة")
 import yt_dlp
 from telegram import Update
 from telegram.ext import (
